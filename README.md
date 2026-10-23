@@ -40,15 +40,249 @@ TermiAI uses Python's built-in `urllib` and `json` modules for API communication
 ```bash
 mkdir -p ~/TermiAI
 cd ~/TermiAI
+nano main.py
 ```
 
-The main application file should be located at:
+Then copy the code below and paste it into `main.py`:
 
-```text
-~/TermiAI/main.py
+```python
+import os
+import sys
+import json
+import urllib.request
+import urllib.error
+from pathlib import Path
+from datetime import datetime
+
+API_KEY = os.getenv("GEMINI_API_KEY")
+MODEL = os.getenv("GEMINI_MODEL")
+API_URL = (
+    f"https://generativelanguage.googleapis.com/v1beta/"
+    f"models/{MODEL}:generateContent"
+)
+
+HISTORY_FILE = Path.home() / ".termai_history.json"
+SYSTEM_PROMPT = (
+    "You are TermiAI, a helpful AI assistant. "
+    "Reply in the same language as the user unless asked otherwise."
+)
+
+GREEN = "\033[92m"
+CYAN = "\033[96m"
+YELLOW = "\033[93m"
+RED = "\033[91m"
+DIM = "\033[2m"
+RESET = "\033[0m"
+BOLD = "\033[1m"
+
+
+def load_history():
+    try:
+        data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return []
+
+
+def save_history(history):
+    try:
+        HISTORY_FILE.write_text(
+            json.dumps(history, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print(f"{YELLOW}Could not save history: {exc}{RESET}")
+
+
+def print_banner():
+    os.system("clear")
+    print(f"{GREEN}{BOLD}")
+    print("╭────────────────────────────────────────╮")
+    print("│               TermiAI                   │")
+    print("│          Python · Gemini Cloud          │")
+    print("╰────────────────────────────────────────╯")
+    print(f"{RESET}{DIM}Model: {MODEL}{RESET}")
+    print(f"{DIM}Commands: /help /clear /history /model /exit{RESET}")
+    print()
+
+
+def request_gemini(history):
+    contents = []
+    for item in history:
+        if item.get("role") in ("user", "model"):
+            contents.append({
+                "role": item["role"],
+                "parts": [{"text": item.get("text", "")}],
+            })
+
+    payload = {
+        "systemInstruction": {
+            "parts": [{"text": SYSTEM_PROMPT}]
+        },
+        "contents": contents,
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 2048,
+        },
+    }
+
+    req = urllib.request.Request(
+        API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": API_KEY,
+        },
+        method="POST",
+    )
+
+    with urllib.request.urlopen(req, timeout=120) as response:
+        data = json.loads(response.read().decode("utf-8"))
+
+    candidates = data.get("candidates", [])
+    if not candidates:
+        feedback = data.get("promptFeedback", {})
+        reason = feedback.get("blockReason", "No response returned")
+        raise RuntimeError(reason)
+
+    parts = candidates[0].get("content", {}).get("parts", [])
+    answer = "".join(
+        part.get("text", "")
+        for part in parts
+        if "text" in part
+    )
+
+    if not answer:
+        raise RuntimeError("The model returned no text.")
+    return answer
+
+
+def show_help():
+    print(f"""
+{CYAN}TermiAI commands{RESET}
+
+  /help       Show this help
+  /clear      Clear current conversation
+  /history    Show recent conversation
+  /model      Show or change model
+  /exit       Exit TermiAI
+
+Normal text is sent to Gemini.
+Conversation history is stored locally.
+""")
+
+
+def show_history(history):
+    if not history:
+        print(f"{DIM}No conversation yet.{RESET}")
+        return
+
+    for item in history[-10:]:
+        role = "You" if item["role"] == "user" else "TermiAI"
+        color = CYAN if role == "You" else GREEN
+        print(f"\n{color}{role}:{RESET}")
+        print(item.get("text", ""))
+
+
+def main():
+    global MODEL, API_URL
+
+    if not API_KEY:
+        print(f"{RED}GEMINI_API_KEY is not set.{RESET}")
+        print("Set it first with:")
+        print("export GEMINI_API_KEY='your_api_key'")
+        return
+
+    history = load_history()
+    print_banner()
+
+    while True:
+        try:
+            prompt = input(f"{GREEN}{BOLD}You › {RESET}").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(f"\n{DIM}TermiAI closed.{RESET}")
+            break
+
+        if not prompt:
+            continue
+
+        command = prompt.lower()
+
+        if command in ("/exit", "/quit"):
+            print(f"{GREEN}See you next time!{RESET}")
+            break
+
+        if command == "/help":
+            show_help()
+            continue
+
+        if command == "/clear":
+            history = []
+            save_history(history)
+            print(f"{YELLOW}Conversation cleared.{RESET}")
+            continue
+
+        if command == "/history":
+            show_history(history)
+            continue
+
+        if command == "/model":
+            print(f"Current model: {MODEL}")
+            new_model = input(
+                "New model name (Enter to keep current): "
+            ).strip()
+            if new_model:
+                MODEL = new_model
+                API_URL = (
+                    "https://generativelanguage.googleapis.com/v1beta/"
+                    f"models/{MODEL}:generateContent"
+                )
+                print(f"{GREEN}Model set to {MODEL}{RESET}")
+            continue
+
+        history.append({"role": "user", "text": prompt})
+
+        print(f"\n{GREEN}{BOLD}TermiAI › {RESET}", end="", flush=True)
+
+        try:
+            answer = request_gemini(history)
+            print(answer)
+            history.append({"role": "model", "text": answer})
+            save_history(history)
+
+        except urllib.error.HTTPError as exc:
+            details = exc.read().decode("utf-8", errors="replace")
+            try:
+                message = json.loads(details).get("error", {}).get(
+                    "message", details
+                )
+            except json.JSONDecodeError:
+                message = details
+            print(f"\n{RED}API error ({exc.code}): {message}{RESET}")
+            history.pop()
+
+        except urllib.error.URLError as exc:
+            print(f"\n{RED}Network error: {exc.reason}{RESET}")
+            history.pop()
+
+        except (TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
+            print(f"\n{RED}Error: {exc}{RESET}")
+            history.pop()
+
+        except Exception as exc:
+            print(f"\n{RED}Unexpected error: {exc}{RESET}")
+            history.pop()
+
+        print()
+
+
+if __name__ == "__main__":
+    main()
 ```
 
-Place the TermiAI Python application code in `main.py`.
+Save the file with `Ctrl + O`, press Enter, and exit with `Ctrl + X`.
 
 ## 3. Configure Your Gemini API Key
 
