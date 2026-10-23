@@ -85,6 +85,7 @@ nano ~/bin/TermiAI
 
 Paste this launcher script:
 
+'''bash
 #!/data/data/com.termux/files/usr/bin/bash
 
 APP_DIR="$HOME/TermiAI"
@@ -121,7 +122,7 @@ fi
 
 cd "$APP_DIR" || exit 1
 exec python main.py
-
+'''
 Save the file and exit Nano.
 
 Make the launcher executable:
